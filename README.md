@@ -117,7 +117,28 @@ npm run build
 Set-Location ..
 ```
 
-### 6. Existing Terminal Commands (Preserved)
+### 6. Build the Android Debug APK (Capacitor)
+```powershell
+# 1. Ensure frontend dependencies are installed and Vite is built with the target API URL
+Set-Location frontend
+npm install
+npm run build
+
+# 2. Sync web assets into the Android native project
+npx cap sync android
+
+# 3. Compile the debug APK using Gradle wrapper
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.17.10-hotspot"
+Set-Location android
+.\gradlew.bat assembleDebug
+
+# 4. The generated APK will be located at:
+# frontend/android/app/build/outputs/apk/debug/app-debug.apk
+# (and can be copied to the repository root as Faculty-Onboarding-Assistant-debug.apk)
+```
+
+### 7. Existing Terminal Commands (Preserved)
 ```powershell
 # Retrieval-only terminal search (no API key required)
 .\.venv\Scripts\python backend\search_demo.py
