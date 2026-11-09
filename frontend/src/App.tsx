@@ -1,78 +1,73 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiRequestError,
-  createConversation,
-  fetchConversationMessages,
-  fetchConversations,
-  fetchHealth,
-  sendConversationMessage,
-} from "./api";
-import type {
   AnswerStatus,
   ChatMessage,
   CitedSource,
   ConversationSummary,
+  DocumentStatusResponse,
   HealthResponse,
+  SourceMode,
 } from "./types";
+import {
+  ACCESS_TOKEN_REQUIRED_EVENT,
+  ApiRequestError,
+  createConversation,
+  deleteDocument,
+  fetchConversationMessages,
+  fetchConversations,
+  fetchDocumentStatus,
+  fetchHealth,
+  getAccessToken,
+  sendConversationMessage,
+  setAccessToken,
+  uploadDocument,
+} from "./api";
 
-const ACTIVE_CONVERSATION_STORAGE_KEY =
-  "tulane_faculty_onboarding_active_conversation_id";
+const ACTIVE_CONVERSATION_STORAGE_KEY = "tulane_faculty_onboarding_active_conv_id";
 
-interface ExampleQuestion {
+interface ExampleQuestionItem {
   category: string;
   question: string;
   hint: string;
 }
 
-const EXAMPLE_QUESTIONS: ExampleQuestion[] = [
+const EXAMPLE_QUESTIONS: ExampleQuestionItem[] = [
   {
-    category: "Faculty Leave & Approvals",
-    question:
-      "How many weeks of Paid Parental Leave do full-time faculty receive, and who approves requests?",
-    hint: "Tests grounded retrieval and follow-up context on Faculty Handbook pp. 150–151",
+    category: "Faculty Leave",
+    question: "How much paid parental leave do faculty get?",
+    hint: "Chapter 3: Leave policies for full-time regular faculty.",
   },
   {
-    category: "Sabbatical Leave",
-    question:
-      "Who is eligible for faculty sabbatical leave and what are the compensation and return obligations?",
-    hint: "Covers tenure-track eligibility and service requirements on pp. 25, 159–160",
+    category: "Approval Procedures",
+    question: "Who approves faculty sabbatical leave and when must it be requested?",
+    hint: "Department Chair, Dean, and Provost approval timelines.",
   },
   {
-    category: "Research Misconduct Policy",
-    question:
-      "Within how many days must a research misconduct investigation be completed and what is the standard of proof?",
-    hint: "Queries the Appended Research Misconduct Policy section (pp. 192–238)",
+    category: "Research Misconduct",
+    question: "What are the formal stages of a research misconduct inquiry and investigation?",
+    hint: "Appended Research Misconduct Policy (PDF pages 192–238).",
   },
   {
-    category: "Workplace Policies",
-    question:
-      "What are the restrictions in the Nepotism Policy for faculty supervising or auditing a relative?",
-    hint: "Retrieves conflict-of-interest and prior written approval rules (pp. 58–59)",
+    category: "Tenure & Promotion",
+    question: "What are the criteria and timeline for tenure review?",
+    hint: "Chapter 4: Promotion and tenure review procedures.",
   },
 ];
 
-function formatPagesLabel(pages: number[]): string {
-  if (!pages || pages.length === 0) {
-    return "Page N/A";
-  }
-  if (pages.length === 1) {
-    return `PDF Page ${pages[0]}`;
-  }
-  return `PDF Pages ${pages.join(", ")}`;
-}
-
 function formatTimestamp(isoString: string): string {
-  if (!isoString) return "";
-  const date = new Date(isoString);
-  if (Number.isNaN(date.getTime())) {
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } catch {
     return isoString;
   }
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+}
+
+function formatPagesLabel(pages: number[]): string {
+  if (!pages || pages.length === 0) return "PDF Page: unrecorded";
+  if (pages.length === 1) return `PDF Page ${pages[0]}`;
+  return `PDF Pages ${pages.join(", ")}`;
 }
 
 function getStatusBadgeInfo(status?: AnswerStatus | string | null): {
@@ -80,61 +75,41 @@ function getStatusBadgeInfo(status?: AnswerStatus | string | null): {
   className: string;
   description?: string;
 } | null {
+  if (!status) return null;
   switch (status) {
     case "supported":
       return {
-        label: "Grounded in Provided Handbook",
+        label: "Supported by Handbook",
         className: "status-badge status-supported",
       };
     case "partial":
       return {
-        label: "Partially Supported by Handbook",
+        label: "Partially Supported",
         className: "status-badge status-partial",
-        description:
-          "Only part of this question is addressed in the supplied handbook passages.",
+        description: "Part of this response is supported; see the missing information note below.",
       };
     case "clarify":
       return {
-        label: "Clarification Requested",
+        label: "Clarification Needed",
         className: "status-badge status-clarify",
-        description:
-          "Your question could refer to more than one faculty policy or topic. Reply below to clarify.",
+        description: "Your reference was ambiguous. Please clarify which specific policy you mean.",
       };
     case "unsupported":
       return {
-        label: "Not Found in Provided Handbook",
+        label: "Not in Document",
         className: "status-badge status-unsupported",
-        description:
-          "The retrieved handbook passages do not contain information to answer this question.",
       };
     default:
       return null;
   }
 }
 
-interface SourceListProps {
+const ExpandableSourceList: React.FC<{
   messageId: number;
   sources: CitedSource[];
-}
-
-const ExpandableSourceList: React.FC<SourceListProps> = ({
-  messageId,
-  sources,
-}) => {
+}> = ({ messageId, sources }) => {
   const [sectionOpen, setSectionOpen] = useState<boolean>(true);
-  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>(
-    () => {
-      const initial: Record<string, boolean> = {};
-      sources.forEach((src, index) => {
-        initial[`${messageId}-${src.label}-${index}`] = index === 0;
-      });
-      return initial;
-    }
-  );
-
-  if (!sources || sources.length === 0) {
-    return null;
-  }
+  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({});
 
   const toggleCard = (key: string) => {
     setExpandedCards((prev) => ({
@@ -143,9 +118,11 @@ const ExpandableSourceList: React.FC<SourceListProps> = ({
     }));
   };
 
+  if (!sources || sources.length === 0) return null;
+
   return (
     <div className="sources-container">
-      <div className="sources-header-row">
+      <div className="sources-header-bar">
         <button
           type="button"
           className="sources-toggle-btn"
@@ -154,12 +131,11 @@ const ExpandableSourceList: React.FC<SourceListProps> = ({
         >
           <span className="sources-toggle-icon">{sectionOpen ? "▼" : "▶"}</span>
           <span>
-            Cited Handbook Passages ({sources.length}{" "}
-            {sources.length === 1 ? "source" : "sources"})
+            Cited Passages ({sources.length} {sources.length === 1 ? "source" : "sources"})
           </span>
         </button>
         <span className="sources-verification-hint">
-          Verify policy claims against the PDF pages and excerpts below.
+          Verify claims against the PDF pages and excerpts below.
         </span>
       </div>
 
@@ -181,12 +157,8 @@ const ExpandableSourceList: React.FC<SourceListProps> = ({
                 >
                   <div className="source-card-title-group">
                     <span className="source-label-pill">[{src.label}]</span>
-                    <span className="source-section-tag">
-                      {src.document_section}
-                    </span>
-                    <span className="source-pages-tag">
-                      {formatPagesLabel(src.pdf_pages)}
-                    </span>
+                    <span className="source-section-tag">{src.document_section}</span>
+                    <span className="source-pages-tag">{formatPagesLabel(src.pdf_pages)}</span>
                   </div>
                   <div className="source-card-meta-right">
                     <code className="source-chunk-id">{src.chunk_id}</code>
@@ -212,9 +184,7 @@ const ExpandableSourceList: React.FC<SourceListProps> = ({
                         <strong>Chunk ID:</strong> <code>{src.chunk_id}</code>
                       </span>
                     </div>
-                    <blockquote className="source-excerpt">
-                      “{src.excerpt}”
-                    </blockquote>
+                    <blockquote className="source-excerpt">“{src.excerpt}”</blockquote>
                   </div>
                 )}
               </div>
@@ -229,9 +199,7 @@ const ExpandableSourceList: React.FC<SourceListProps> = ({
 export const App: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<
-    string | null
-  >(() => {
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
     try {
       return localStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY);
     } catch {
@@ -243,23 +211,48 @@ export const App: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
   const [isCreatingChat, setIsCreatingChat] = useState<boolean>(false);
-  const [inFlightByConversation, setInFlightByConversation] = useState<
-    Record<string, boolean>
-  >({});
-  const [pendingUserQuestionByConv, setPendingUserQuestionByConv] = useState<
-    Record<string, string>
-  >({});
+  const [inFlightByConversation, setInFlightByConversation] = useState<Record<string, boolean>>({});
+  const [pendingUserQuestionByConv, setPendingUserQuestionByConv] = useState<Record<string, string>>({});
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
-  // Refs to guard against stale responses when the user switches conversations mid-flight
+  // Chat-scoped upload and source mode states
+  const [documentByConv, setDocumentByConv] = useState<Record<string, DocumentStatusResponse>>({});
+  const [sourceModeByConv, setSourceModeByConv] = useState<Record<string, SourceMode>>({});
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [showRemoveModal, setShowRemoveModal] = useState<boolean>(false);
+
+  // Hosted Access Token Modal state
+  const [showTokenModal, setShowTokenModal] = useState<boolean>(false);
+  const [tokenInput, setTokenInput] = useState<string>(() => getAccessToken());
+
+  // Refs to guard against stale responses when switching conversations mid-flight
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const loadMessagesSeqRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const activeDoc: DocumentStatusResponse | undefined = activeConversationId
+    ? documentByConv[activeConversationId]
+    : undefined;
+  const isDocReady = activeDoc?.status === "ready";
+  const activeSourceMode: SourceMode =
+    (activeConversationId && sourceModeByConv[activeConversationId]) || "handbook";
+
+  const setActiveSourceMode = (mode: SourceMode) => {
+    if (activeConversationId) {
+      setSourceModeByConv((prev) => ({ ...prev, [activeConversationId]: mode }));
+    }
+  };
 
   const updateActiveConversationId = useCallback((nextId: string | null) => {
     activeConversationIdRef.current = nextId;
     setActiveConversationId(nextId);
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
     try {
       if (nextId) {
         localStorage.setItem(ACTIVE_CONVERSATION_STORAGE_KEY, nextId);
@@ -267,7 +260,7 @@ export const App: React.FC = () => {
         localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
       }
     } catch {
-      // Ignore localStorage quota/privacy errors
+      // Ignore storage errors
     }
   }, []);
 
@@ -281,6 +274,34 @@ export const App: React.FC = () => {
     scrollToBottom();
   }, [messages, pendingUserQuestionByConv, activeConversationId, scrollToBottom]);
 
+  // Listen for 401 token requirement events
+  useEffect(() => {
+    const onTokenRequired = () => setShowTokenModal(true);
+    window.addEventListener(ACCESS_TOKEN_REQUIRED_EVENT, onTokenRequired);
+    return () => window.removeEventListener(ACCESS_TOKEN_REQUIRED_EVENT, onTokenRequired);
+  }, []);
+
+  // Poll processing documents across any conversation
+  useEffect(() => {
+    const processingIds = Object.entries(documentByConv)
+      .filter(([_, doc]) => doc.status === "processing")
+      .map(([id]) => id);
+
+    if (processingIds.length === 0) return;
+
+    const timer = setInterval(() => {
+      for (const cid of processingIds) {
+        fetchDocumentStatus(cid)
+          .then((doc) => {
+            setDocumentByConv((prev) => ({ ...prev, [cid]: doc }));
+          })
+          .catch(() => {});
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [documentByConv]);
+
   const loadConversationHistory = useCallback(
     async (
       conversationId: string,
@@ -290,9 +311,15 @@ export const App: React.FC = () => {
       setIsLoadingMessages(true);
       setErrorBanner(null);
 
+      // Concurrently fetch document status for this conversation
+      void fetchDocumentStatus(conversationId)
+        .then((doc) => {
+          setDocumentByConv((prev) => ({ ...prev, [conversationId]: doc }));
+        })
+        .catch(() => {});
+
       try {
         const data = await fetchConversationMessages(conversationId);
-        // Guard against race condition if the user switched to another chat while loading
         if (
           activeConversationIdRef.current !== conversationId ||
           loadMessagesSeqRef.current !== requestSeq
@@ -352,70 +379,49 @@ export const App: React.FC = () => {
     [updateActiveConversationId]
   );
 
-  // Initial load: check backend health, load conversation list, and restore stored conversation ID
+  // Initial App Mount
   useEffect(() => {
-    let cancelled = false;
+    let isMounted = true;
 
     async function initializeApp() {
       setIsInitializing(true);
       try {
-        const [healthRes, convList] = await Promise.all([
-          fetchHealth().catch(() => null),
-          fetchConversations(),
-        ]);
-        if (cancelled) return;
+        const healthRes = await fetchHealth().catch(() => null);
+        if (isMounted) setHealth(healthRes);
 
-        if (healthRes) {
-          setHealth(healthRes);
-        }
-        setConversations(convList);
+        const convs = await fetchConversations().catch(() => []);
+        if (!isMounted) return;
+        setConversations(convs);
 
-        const storedId = activeConversationIdRef.current;
-        if (storedId) {
-          const restoredOk = await loadConversationHistory(storedId, {
-            fallbackOnNotFound: true,
-          });
-          if (cancelled) return;
-          if (restoredOk) {
-            return;
-          }
-        }
-
-        // If no stored conversation (or stored ID was stale/missing), select the most recent one if available
-        if (convList.length > 0) {
-          const firstId = convList[0].conversation_id;
-          updateActiveConversationId(firstId);
-          await loadConversationHistory(firstId, { fallbackOnNotFound: true });
-        } else {
-          updateActiveConversationId(null);
-          setMessages([]);
+        const savedId = activeConversationIdRef.current;
+        if (savedId) {
+          await loadConversationHistory(savedId, { fallbackOnNotFound: true });
+        } else if (convs.length > 0) {
+          updateActiveConversationId(convs[0].conversation_id);
+          await loadConversationHistory(convs[0].conversation_id);
         }
       } catch (err) {
-        if (cancelled) return;
+        if (!isMounted) return;
         const msg =
           err instanceof Error
             ? err.message
-            : "Unable to connect to the FastAPI backend. Make sure uvicorn is running.";
+            : "Failed to initialize the onboarding assistant.";
         setErrorBanner(msg);
       } finally {
-        if (!cancelled) {
-          setIsInitializing(false);
-        }
+        if (isMounted) setIsInitializing(false);
       }
     }
 
     void initializeApp();
+
     return () => {
-      cancelled = true;
+      isMounted = false;
     };
   }, [loadConversationHistory, updateActiveConversationId]);
 
   const handleSelectConversation = async (conversationId: string) => {
-    if (conversationId === activeConversationIdRef.current) {
-      return;
-    }
+    if (activeConversationId === conversationId) return;
     setErrorBanner(null);
-    setMessages([]);
     updateActiveConversationId(conversationId);
     await loadConversationHistory(conversationId);
   };
@@ -424,7 +430,6 @@ export const App: React.FC = () => {
     if (isCreatingChat) return;
     setIsCreatingChat(true);
     setErrorBanner(null);
-
     try {
       const created = await createConversation();
       setConversations((prev) => [
@@ -438,13 +443,69 @@ export const App: React.FC = () => {
       textareaRef.current?.focus();
     } catch (err) {
       const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to create a new conversation.";
+        err instanceof Error ? err.message : "Failed to create a new conversation.";
       setErrorBanner(msg);
     } finally {
       setIsCreatingChat(false);
     }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setSelectedFile(file);
+  };
+
+  const handleUploadSubmit = async () => {
+    if (!selectedFile || !activeConversationId || isUploading) return;
+    setIsUploading(true);
+    setErrorBanner(null);
+    try {
+      const doc = await uploadDocument(activeConversationId, selectedFile);
+      setDocumentByConv((prev) => ({
+        ...prev,
+        [activeConversationId]: doc,
+      }));
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to upload PDF.";
+      setErrorBanner(msg);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleConfirmRemoveDocument = async () => {
+    if (!activeConversationId) return;
+    setErrorBanner(null);
+    try {
+      await deleteDocument(activeConversationId);
+      setDocumentByConv((prev) => ({
+        ...prev,
+        [activeConversationId]: {
+          conversation_id: activeConversationId,
+          status: "none",
+        },
+      }));
+      setActiveSourceMode("handbook");
+      setShowRemoveModal(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to remove PDF.";
+      setErrorBanner(msg);
+    }
+  };
+
+  const handleSaveToken = () => {
+    const cleaned = tokenInput.trim();
+    setAccessToken(cleaned);
+    setShowTokenModal(false);
+    setErrorBanner(null);
+    // Refresh conversations with the new token
+    void fetchConversations()
+      .then((convs) => setConversations(convs))
+      .catch(() => {});
   };
 
   const submitQuestion = async (rawQuestion: string) => {
@@ -462,7 +523,6 @@ export const App: React.FC = () => {
     setErrorBanner(null);
     let targetConvId = currentConvId;
 
-    // Clear composer optimistically while preserving `trimmed` to restore if the request fails
     setDraftInput("");
 
     try {
@@ -478,6 +538,20 @@ export const App: React.FC = () => {
       }
 
       const lockedConvId = targetConvId;
+      const lockedMode: SourceMode =
+        (lockedConvId && sourceModeByConv[lockedConvId]) || "handbook";
+
+      if (lockedMode === "uploaded_pdf") {
+        const doc = documentByConv[lockedConvId];
+        if (!doc || doc.status !== "ready") {
+          setDraftInput(trimmed);
+          setErrorBanner(
+            "No uploaded PDF is ready for this conversation. Upload a faculty-related PDF first or switch to Handbook mode."
+          );
+          return;
+        }
+      }
+
       setInFlightByConversation((prev) => ({ ...prev, [lockedConvId]: true }));
       setPendingUserQuestionByConv((prev) => ({
         ...prev,
@@ -485,9 +559,12 @@ export const App: React.FC = () => {
       }));
 
       try {
-        const response = await sendConversationMessage(lockedConvId, trimmed);
+        const response = await sendConversationMessage(
+          lockedConvId,
+          trimmed,
+          lockedMode
+        );
 
-        // Refresh sidebar list so updated title, message_count, and ordering are reflected
         const updatedList = await fetchConversations().catch(() => null);
         if (updatedList) {
           setConversations(updatedList);
@@ -506,7 +583,6 @@ export const App: React.FC = () => {
           );
         }
 
-        // CRITICAL: Only append messages to the main view if the user is STILL viewing this conversation!
         if (activeConversationIdRef.current === lockedConvId) {
           setMessages((prev) => [
             ...prev,
@@ -515,7 +591,6 @@ export const App: React.FC = () => {
           ]);
         }
       } catch (sendErr) {
-        // Restore the user's draft input so nothing is lost and no duplicate message is created
         if (activeConversationIdRef.current === lockedConvId) {
           setDraftInput((currentDraft) =>
             currentDraft.trim() ? currentDraft : trimmed
@@ -583,7 +658,7 @@ export const App: React.FC = () => {
           <div className="brand-emblem">TU</div>
           <div className="brand-text">
             <span className="brand-uni">Tulane University</span>
-            <span className="brand-scope">Faculty Handbook RAG</span>
+            <span className="brand-scope">Faculty Onboarding Assistant</span>
           </div>
         </div>
 
@@ -603,33 +678,24 @@ export const App: React.FC = () => {
         <div className="conversation-list">
           {conversations.length === 0 ? (
             <div className="sidebar-empty-note">
-              No saved chats yet. Ask a handbook question or click{" "}
+              No saved chats yet. Ask a question or click{" "}
               <strong>+ New Chat</strong> to begin.
             </div>
           ) : (
             conversations.map((conv) => {
               const isSelected = conv.conversation_id === activeConversationId;
-              const isConvBusy = Boolean(
-                inFlightByConversation[conv.conversation_id]
-              );
+              const isConvBusy = Boolean(inFlightByConversation[conv.conversation_id]);
               return (
                 <button
                   key={conv.conversation_id}
                   type="button"
                   className={`conversation-item ${isSelected ? "active" : ""}`}
-                  onClick={() =>
-                    void handleSelectConversation(conv.conversation_id)
-                  }
+                  onClick={() => void handleSelectConversation(conv.conversation_id)}
                 >
                   <div className="conversation-item-title-row">
-                    <span className="conversation-item-title">
-                      {conv.title}
-                    </span>
+                    <span className="conversation-item-title">{conv.title}</span>
                     {isConvBusy && (
-                      <span
-                        className="conv-busy-dot"
-                        title="Processing a response..."
-                      />
+                      <span className="conv-busy-dot" title="Processing a response..." />
                     )}
                   </div>
                   <div className="conversation-item-meta">
@@ -662,6 +728,14 @@ export const App: React.FC = () => {
                 : "Checking backend status..."}
             </span>
           </div>
+          <button
+            type="button"
+            className="token-config-btn"
+            onClick={() => setShowTokenModal(true)}
+            title="Configure access token for hosted deployments"
+          >
+            🔑 Access Token {getAccessToken() ? "(Configured)" : "(None)"}
+          </button>
           <div className="sidebar-disclaimer-mini">
             Local single-user demo • CPU FAISS retrieval
           </div>
@@ -675,14 +749,10 @@ export const App: React.FC = () => {
           <div className="header-titles">
             <h1 className="app-title">Faculty Onboarding Assistant</h1>
             <p className="app-subtitle">
-              Source: Supplied{" "}
-              <strong>
-                Tulane University Faculty Handbook (Updated August 7, 2026)
-              </strong>{" "}
-              &amp; appended{" "}
-              <strong>Research Misconduct Policy (March 7, 2022)</strong>.
-              Answers reflect only this provided faculty handbook (not general
-              staff policy), and its current live policy status is unverified.
+              Scope: Supplied{" "}
+              <strong>Tulane University Faculty Handbook (Updated August 7, 2026)</strong>{" "}
+              &amp; appended <strong>Research Misconduct Policy (March 7, 2022)</strong>, or
+              your uploaded faculty PDF.
             </p>
           </div>
           {activeConversationSummary && (
@@ -703,7 +773,7 @@ export const App: React.FC = () => {
         {errorBanner && (
           <div className="error-banner" role="alert">
             <div className="error-banner-text">
-              <strong>Request Error:</strong> {errorBanner}
+              <strong>Notice:</strong> {errorBanner}
             </div>
             <button
               type="button"
@@ -713,6 +783,91 @@ export const App: React.FC = () => {
             >
               Dismiss
             </button>
+          </div>
+        )}
+
+        {/* Chat-Scoped PDF Upload Banner */}
+        {activeConversationSummary && (
+          <div className="chat-doc-banner">
+            <div className="chat-doc-panel">
+              <div className="chat-doc-header-row">
+                <div className="chat-doc-title-group">
+                  <span className="chat-doc-icon">📄</span>
+                  <span>Chat Document:</span>
+                  {(!activeDoc || activeDoc.status === "none") && (
+                    <span className="chat-doc-meta-info">No document uploaded yet for this chat.</span>
+                  )}
+                  {activeDoc?.status === "processing" && (
+                    <span className="chat-doc-status-badge processing">
+                      <div className="spinner-small" />
+                      Validating &amp; Indexing: {activeDoc.display_filename}
+                    </span>
+                  )}
+                  {activeDoc?.status === "ready" && (
+                    <span className="chat-doc-status-badge ready">
+                      ✓ Ready: {activeDoc.display_filename} ({activeDoc.page_count} pages, {activeDoc.chunk_count} passages)
+                    </span>
+                  )}
+                  {activeDoc?.status === "rejected" && (
+                    <span className="chat-doc-status-badge rejected">
+                      ✗ Out of Scope: {activeDoc.display_filename}
+                    </span>
+                  )}
+                  {activeDoc?.status === "needs_clarification" && (
+                    <span className="chat-doc-status-badge needs_clarification">
+                      ⚠ Borderline / Needs Clarification: {activeDoc.display_filename}
+                    </span>
+                  )}
+                  {activeDoc?.status === "failed" && (
+                    <span className="chat-doc-status-badge failed">
+                      ✗ Processing Failed: {activeDoc.display_filename || "Document"}
+                    </span>
+                  )}
+                </div>
+
+                {activeDoc && activeDoc.status !== "none" && activeDoc.status !== "processing" && (
+                  <button
+                    type="button"
+                    className="chat-doc-btn chat-doc-btn-remove"
+                    onClick={() => setShowRemoveModal(true)}
+                  >
+                    Remove PDF
+                  </button>
+                )}
+              </div>
+
+              {/* Explanatory notes or action messages */}
+              {activeDoc && (activeDoc.status === "rejected" || activeDoc.status === "needs_clarification" || activeDoc.status === "failed") && (
+                <div className="chat-doc-meta-info">
+                  <strong>Reason:</strong> {activeDoc.message || "The document could not be accepted."}
+                </div>
+              )}
+
+              {/* Upload control when no active doc is ready or processing */}
+              {(!activeDoc || activeDoc.status === "none") && (
+                <div className="chat-doc-upload-row">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    className="chat-doc-file-input"
+                    onChange={handleFileChange}
+                    disabled={isUploading}
+                  />
+                  <button
+                    type="button"
+                    className="chat-doc-btn chat-doc-btn-upload"
+                    onClick={() => void handleUploadSubmit()}
+                    disabled={isUploading || !selectedFile}
+                  >
+                    {isUploading ? "Uploading..." : "Upload PDF"}
+                  </button>
+                  <span className="chat-doc-limits-hint">
+                    Max 10 MiB, up to 50 pages. Searchable PDF only (no OCR). Excerpts are sent to Gemini for faculty-relevance validation.
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -726,17 +881,12 @@ export const App: React.FC = () => {
           ) : messages.length === 0 && !pendingQuestionForActiveConv ? (
             <div className="welcome-panel">
               <div className="welcome-card">
-                <div className="welcome-badge">
-                  Tulane University Faculty Scope Only
-                </div>
+                <div className="welcome-badge">Faculty Scope Only</div>
                 <h2>Welcome to the Faculty Onboarding Assistant</h2>
                 <p>
-                  Ask questions about faculty appointments, tenure and promotion
-                  criteria, sabbatical and parental leave, grievance procedures,
-                  faculty governance, or the appended Research Misconduct
-                  Policy. Every policy answer cites specific handbook passages
-                  (<code>[S1]</code>, <code>[S2]</code>) with PDF page numbers
-                  and excerpts.
+                  Each chat begins in <strong>Handbook mode</strong> grounded in the Tulane University Faculty Handbook.
+                  You can also upload a searchable faculty-related PDF to this chat and switch to <strong>Uploaded PDF only</strong> mode.
+                  Every answer cites specific passages (<code>[S1]</code>, <code>[S2]</code>) with PDF page numbers and excerpts.
                 </p>
 
                 <div className="example-questions-grid">
@@ -749,9 +899,7 @@ export const App: React.FC = () => {
                       onClick={() => void submitQuestion(item.question)}
                     >
                       <span className="example-category">{item.category}</span>
-                      <span className="example-question-text">
-                        “{item.question}”
-                      </span>
+                      <span className="example-question-text">“{item.question}”</span>
                       <span className="example-hint">{item.hint}</span>
                     </button>
                   ))}
@@ -762,9 +910,7 @@ export const App: React.FC = () => {
             <div className="messages-list">
               {messages.map((msg) => {
                 const isUser = msg.role === "user";
-                const badgeInfo = !isUser
-                  ? getStatusBadgeInfo(msg.status)
-                  : null;
+                const badgeInfo = !isUser ? getStatusBadgeInfo(msg.status) : null;
 
                 return (
                   <article
@@ -776,15 +922,11 @@ export const App: React.FC = () => {
                     <div className="message-bubble">
                       <div className="message-meta-header">
                         <span className="message-role-label">
-                          {isUser
-                            ? "You"
-                            : "Faculty Onboarding Assistant (Handbook RAG)"}
+                          {isUser ? "You" : "Faculty Onboarding Assistant"}
                         </span>
                         <div className="message-meta-right">
                           {badgeInfo && (
-                            <span className={badgeInfo.className}>
-                              {badgeInfo.label}
-                            </span>
+                            <span className={badgeInfo.className}>{badgeInfo.label}</span>
                           )}
                           {msg.created_at && (
                             <span className="message-timestamp">
@@ -795,41 +937,33 @@ export const App: React.FC = () => {
                       </div>
 
                       {badgeInfo?.description && (
-                        <div
-                          className={`status-callout status-callout-${msg.status}`}
-                        >
+                        <div className={`status-callout status-callout-${msg.status}`}>
                           {badgeInfo.description}
                         </div>
                       )}
 
-                      {/* Safe text rendering via React text nodes (no raw HTML injection) */}
                       <div className="message-content-text">
                         {msg.content.split("\n").map((line, idx) => (
                           <p
                             key={idx}
-                            className={
-                              line.trim() === "" ? "empty-line" : "text-line"
-                            }
+                            className={line.trim() === "" ? "empty-line" : "text-line"}
                           >
                             {line}
                           </p>
                         ))}
                       </div>
 
-                      {!isUser &&
-                        msg.cited_sources &&
-                        msg.cited_sources.length > 0 && (
-                          <ExpandableSourceList
-                            messageId={msg.message_id}
-                            sources={msg.cited_sources}
-                          />
-                        )}
+                      {!isUser && msg.cited_sources && msg.cited_sources.length > 0 && (
+                        <ExpandableSourceList
+                          messageId={msg.message_id}
+                          sources={msg.cited_sources}
+                        />
+                      )}
                     </div>
                   </article>
                 );
               })}
 
-              {/* Pending turn display while a request is in flight for THIS conversation */}
               {pendingQuestionForActiveConv && (
                 <>
                   <article className="message-row message-user message-pending">
@@ -839,13 +973,11 @@ export const App: React.FC = () => {
                         <span className="message-timestamp">Sending...</span>
                       </div>
                       <div className="message-content-text">
-                        {pendingQuestionForActiveConv
-                          .split("\n")
-                          .map((line, idx) => (
-                            <p key={idx} className="text-line">
-                              {line}
-                            </p>
-                          ))}
+                        {pendingQuestionForActiveConv.split("\n").map((line, idx) => (
+                          <p key={idx} className="text-line">
+                            {line}
+                          </p>
+                        ))}
                       </div>
                     </div>
                   </article>
@@ -858,8 +990,9 @@ export const App: React.FC = () => {
                       <div className="loading-inline">
                         <div className="spinner-small" />
                         <span>
-                          Searching the Tulane Faculty Handbook and generating a
-                          grounded response...
+                          {activeSourceMode === "uploaded_pdf"
+                            ? `Searching uploaded document (${activeDoc?.display_filename || "PDF"})...`
+                            : "Searching the Tulane Faculty Handbook and generating response..."}
                         </span>
                       </div>
                     </div>
@@ -871,6 +1004,38 @@ export const App: React.FC = () => {
             </div>
           )}
         </main>
+
+        {/* Source Mode Selector Bar */}
+        <div className="source-mode-bar">
+          <div className="source-mode-buttons">
+            <span className="source-mode-label">Search Mode:</span>
+            <button
+              type="button"
+              className={`source-mode-btn ${activeSourceMode === "handbook" ? "active" : ""}`}
+              onClick={() => setActiveSourceMode("handbook")}
+            >
+              📖 Tulane Faculty Handbook
+            </button>
+            <button
+              type="button"
+              className={`source-mode-btn ${activeSourceMode === "uploaded_pdf" ? "active" : ""}`}
+              disabled={!isDocReady}
+              title={
+                !isDocReady
+                  ? "Upload and verify a faculty-related PDF above to enable this mode"
+                  : `Query exclusively from ${activeDoc?.display_filename}`
+              }
+              onClick={() => setActiveSourceMode("uploaded_pdf")}
+            >
+              📄 Uploaded PDF only {activeDoc?.display_filename ? `(${activeDoc.display_filename})` : ""}
+            </button>
+          </div>
+          <div className="source-mode-active-indicator">
+            {activeSourceMode === "uploaded_pdf"
+              ? `Querying: ${activeDoc?.display_filename || "Uploaded PDF only"}`
+              : "Querying: Tulane Faculty Handbook"}
+          </div>
+        </div>
 
         {/* Composer */}
         <footer className="composer-footer">
@@ -884,37 +1049,107 @@ export const App: React.FC = () => {
                 placeholder={
                   isActiveConvBusy
                     ? "Waiting for the current response to complete..."
-                    : "Ask a question about the Tulane University Faculty Handbook... (Press Enter to send, Shift+Enter for a newline)"
+                    : activeSourceMode === "uploaded_pdf"
+                      ? `Ask a question about ${activeDoc?.display_filename || "the uploaded PDF"}... (Enter to send, Shift+Enter for newline)`
+                      : "Ask a question about the Tulane University Faculty Handbook... (Enter to send, Shift+Enter for newline)"
                 }
                 value={draftInput}
                 onChange={(e) => setDraftInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 disabled={isActiveConvBusy || isCreatingChat}
-                aria-label="Ask a question about the Tulane University Faculty Handbook"
+                aria-label="Ask a faculty onboarding question"
               />
               <button
                 type="submit"
                 className="composer-send-btn"
-                disabled={
-                  isActiveConvBusy || isCreatingChat || !draftInput.trim()
-                }
+                disabled={isActiveConvBusy || isCreatingChat || !draftInput.trim()}
               >
                 {isActiveConvBusy ? "Sending..." : "Send"}
               </button>
             </div>
             <div className="composer-helper-row">
               <span>
-                Press <kbd>Enter</kbd> to send • <kbd>Shift</kbd> +{" "}
-                <kbd>Enter</kbd> for a new line
+                Press <kbd>Enter</kbd> to send • <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line
               </span>
               <span>{draftInput.trim().length} / 2000 chars</span>
             </div>
           </form>
         </footer>
       </div>
+
+      {/* Remove Document Confirmation Modal */}
+      {showRemoveModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <h2 className="modal-title">Remove Uploaded PDF?</h2>
+            <p className="modal-body">
+              Are you sure you want to remove{" "}
+              <strong>{activeDoc?.display_filename || "this PDF"}</strong> from this conversation?
+            </p>
+            <p className="modal-body">
+              <strong>Note on saved history:</strong> Existing chat messages and citations will
+              remain preserved in your saved transcript, but future questions will no longer be able
+              to retrieve from this document. To upload a replacement PDF, the current document must
+              first be removed.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-btn-cancel"
+                onClick={() => setShowRemoveModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="modal-btn-danger"
+                onClick={() => void handleConfirmRemoveDocument()}
+              >
+                Confirm Removal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Access Token Configuration Modal */}
+      {showTokenModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <h2 className="modal-title">Hosted Access Token</h2>
+            <p className="modal-body">
+              If your backend is deployed with an <code>ACCESS_TOKEN</code> gate on Render, enter the token below.
+              It is saved securely in your browser's local storage and sent via the <code>X-Access-Token</code> header.
+              (Leave empty for local development without authentication.)
+            </p>
+            <input
+              type="text"
+              className="modal-input"
+              placeholder="Paste X-Access-Token here..."
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-btn-cancel"
+                onClick={() => setShowTokenModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="chat-doc-btn chat-doc-btn-upload"
+                onClick={handleSaveToken}
+              >
+                Save Token
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default App;
-

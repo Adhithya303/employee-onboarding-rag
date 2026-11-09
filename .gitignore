@@ -25,3 +25,6 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+
+# User-uploaded PDFs, per-upload indexes and temp files (never commit)
+data/uploads/

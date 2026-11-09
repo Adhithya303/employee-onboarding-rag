@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "conversations" / "chat_history.db"
+_LOCAL_DB_PATH = PROJECT_ROOT / "data" / "conversations" / "chat_history.db"
+# Local default is unchanged. Deployments (e.g. Render persistent disk) can override it with
+# the CONVERSATION_DB_PATH environment variable, e.g. /var/data/chat_history.db.
+DEFAULT_DB_PATH = (
+    Path(os.environ["CONVERSATION_DB_PATH"]) if os.environ.get("CONVERSATION_DB_PATH") else _LOCAL_DB_PATH
+)
 
 
 def _utc_now_iso() -> str:

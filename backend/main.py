@@ -14,13 +14,14 @@ Security & Deployment Scope Note:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 import anyio
-from fastapi import FastAPI, HTTPException, Path as PathParam, Query, Request, status
+from fastapi import FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,7 +30,7 @@ from pydantic import BaseModel, Field, field_validator
 try:
     from backend.conversation_store import DEFAULT_DB_PATH, ConversationStore
     from backend.llm_client import (
-         DEFAULT_ENV_PATH,
+        DEFAULT_ENV_PATH,
         GeminiStructuredClient,
         LLMConfigurationError,
         LLMServiceError,
@@ -41,6 +42,13 @@ try:
         StructuredLLMProtocol,
     )
     from backend.retriever import HandbookRetriever
+    from backend.upload_manager import ActiveDocumentExists, UploadManager, UploadStore
+    from backend.upload_processing import (
+        PdfValidationError,
+        UploadLimits,
+        check_pdf_signature,
+        sanitize_display_filename,
+    )
 except ImportError:
     from conversation_store import DEFAULT_DB_PATH, ConversationStore  # type: ignore
     from llm_client import (  # type: ignore
@@ -56,14 +64,31 @@ except ImportError:
         StructuredLLMProtocol,
     )
     from retriever import HandbookRetriever  # type: ignore
+    from upload_manager import ActiveDocumentExists, UploadManager, UploadStore  # type: ignore
+    from upload_processing import (  # type: ignore
+        PdfValidationError,
+        UploadLimits,
+        check_pdf_signature,
+        sanitize_display_filename,
+    )
 
 MAX_MESSAGE_CHARS = 2000
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
+_PUBLIC_PATHS = {"/api/health", "/api/ready"}
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
     "http://127.0.0.1:5173,"
     "http://localhost:4173,"
     "http://127.0.0.1:4173"
 )
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if os.environ.get("UPLOAD_ARTIFACTS_DIR"):
+    DEFAULT_UPLOADS_DIR = Path(os.environ["UPLOAD_ARTIFACTS_DIR"])
+elif os.environ.get("CONVERSATION_DB_PATH"):
+    DEFAULT_UPLOADS_DIR = Path(os.environ["CONVERSATION_DB_PATH"]).parent / "uploads"
+else:
+    DEFAULT_UPLOADS_DIR = _PROJECT_ROOT / "data" / "uploads"
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +156,10 @@ class SendMessageRequest(BaseModel):
     message: str = Field(
         description="The user's handbook question or follow-up.",
     )
+    source_mode: Literal["handbook", "uploaded_pdf"] = Field(
+        default="handbook",
+        description="The source corpus to query: 'handbook' or 'uploaded_pdf'. Defaults to 'handbook'.",
+    )
 
     @field_validator("message")
     @classmethod
@@ -146,6 +175,29 @@ class SendMessageRequest(BaseModel):
                 f"(received {len(cleaned)} characters)."
             )
         return cleaned
+
+
+class DocumentStatusSchema(BaseModel):
+    """Status metadata for a chat-scoped uploaded PDF."""
+
+    document_id: str | None = None
+    conversation_id: str
+    display_filename: str | None = None
+    status: Literal["none", "processing", "ready", "rejected", "needs_clarification", "failed"]
+    code: str | None = None
+    message: str | None = None
+    page_count: int | None = None
+    chunk_count: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class DeleteDocumentResponse(BaseModel):
+    """Response schema for DELETE /api/conversations/{id}/document."""
+
+    deleted: bool
+    conversation_id: str
+    document_id: str | None = None
 
 
 class SendMessageResponse(BaseModel):
@@ -185,12 +237,14 @@ class AppResources:
     def __init__(
         self,
         store: ConversationStore,
+        upload_manager: UploadManager,
         retriever: HandbookRetriever | None = None,
         llm_client: StructuredLLMProtocol | None = None,
         index_error: str | None = None,
         llm_error: str | None = None,
     ) -> None:
         self.store = store
+        self.upload_manager = upload_manager
         self.retriever = retriever
         self.llm_client = llm_client
         self.index_error = index_error
@@ -275,9 +329,11 @@ def create_app(
     *,
     db_path: Path = DEFAULT_DB_PATH,
     env_path: Path = DEFAULT_ENV_PATH,
+    uploads_dir: Path | None = None,
     retriever_override: HandbookRetriever | None = None,
     llm_client_override: StructuredLLMProtocol | None = None,
     store_override: ConversationStore | None = None,
+    upload_manager_override: UploadManager | None = None,
     index_error_override: str | None = None,
     llm_error_override: str | None = None,
 ) -> FastAPI:
@@ -290,6 +346,16 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store = store_override or await anyio.to_thread.run_sync(
             lambda: ConversationStore(db_path=db_path)
+        )
+
+        resolved_uploads = uploads_dir or (
+            store.db_path.parent / "uploads" if store_override is not None else DEFAULT_UPLOADS_DIR
+        )
+        upload_manager = upload_manager_override or await anyio.to_thread.run_sync(
+            lambda: UploadManager(
+                store=UploadStore(db_path=store.db_path),
+                root=resolved_uploads,
+            )
         )
 
         retriever: HandbookRetriever | None = retriever_override
@@ -314,12 +380,16 @@ def create_app(
 
         app.state.resources = AppResources(
             store=store,
+            upload_manager=upload_manager,
             retriever=retriever,
             llm_client=llm_client,
             index_error=index_error,
             llm_error=llm_error,
         )
-        yield
+        try:
+            yield
+        finally:
+            upload_manager.shutdown()
 
     app = FastAPI(
         title="Tulane University Faculty Onboarding Assistant API",
@@ -331,12 +401,35 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # Optional access gate (disabled when ACCESS_TOKEN is unset, so local use is unchanged).
+    # Registered BEFORE CORSMiddleware so CORS stays outermost and 401 responses still carry
+    # CORS headers. CORS is not authentication; this gate is separate from it.
+    access_token = os.environ.get("ACCESS_TOKEN", "").strip()
+    if access_token:
+
+        @app.middleware("http")
+        async def require_access_token(request: Request, call_next: Any) -> Any:
+            path = request.url.path
+            if (
+                request.method == "OPTIONS"
+                or path in _PUBLIC_PATHS
+                or not path.startswith("/api/")
+            ):
+                return await call_next(request)
+            supplied = request.headers.get("x-access-token", "")
+            if not hmac.compare_digest(supplied.encode(), access_token.encode()):
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Missing or invalid access token."},
+                )
+            return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_parse_cors_origins(),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Accept"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
     )
 
     @app.exception_handler(RequestValidationError)
@@ -399,6 +492,21 @@ def create_app(
             detail=" | ".join(issues) if issues else None,
         )
 
+    @app.get("/api/ready")
+    async def get_ready(request: Request) -> JSONResponse:
+        """Readiness probe for hosting platforms: 200 only when index and Gemini config are usable."""
+        health = await get_health(request)
+        ready = health.status == "ok"
+        return JSONResponse(
+            status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "ready": ready,
+                "index_loaded": health.index_loaded,
+                "chunk_count": health.chunk_count,
+                "llm_configured": health.llm_configured,
+            },
+        )
+
     @app.post(
         "/api/conversations",
         response_model=ConversationSummarySchema,
@@ -459,6 +567,182 @@ def create_app(
         )
 
     @app.post(
+        "/api/conversations/{conversation_id}/upload",
+        response_model=DocumentStatusSchema,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def upload_conversation_document(
+        request: Request,
+        conversation_id: str = PathParam(..., min_length=1, max_length=64),
+        file: UploadFile = File(...),
+    ) -> DocumentStatusSchema:
+        res = _get_resources(request)
+        cid = conversation_id.strip()
+
+        # 1. Verify conversation exists
+        conv = await anyio.to_thread.run_sync(lambda: res.store.get_conversation(cid))
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Conversation '{cid}' was not found.",
+            )
+
+        # 2. Verify model / LLM readiness
+        if res.retriever is None or res.index_error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The embedding model or vector service is not available.",
+            )
+        llm_client = res.llm_client
+        if llm_client is None:
+            try:
+                llm_client = await anyio.to_thread.run_sync(
+                    lambda: GeminiStructuredClient(env_path=env_path)
+                )
+                res.llm_client = llm_client
+                res.llm_error = None
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Gemini configuration error: {_redact_secrets(str(exc))}",
+                ) from exc
+
+        # 3. Check worker capacity
+        if not res.upload_manager.try_reserve_slot():
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="The server is currently busy processing other uploads. Please wait a moment and try again.",
+            )
+
+        # 4. Sanitize display filename and check hint
+        filename = sanitize_display_filename(file.filename)
+        if not filename.lower().endswith(".pdf"):
+            res.upload_manager._release_slot()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only PDF files (.pdf) are supported.",
+            )
+
+        # 5. Atomically reserve conversation's active slot
+        try:
+            doc_record = await anyio.to_thread.run_sync(
+                lambda: res.upload_manager.store.create_processing(cid, filename)
+            )
+        except ActiveDocumentExists:
+            res.upload_manager._release_slot()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "An active document is already being processed or is ready for this conversation. "
+                    "Please remove the existing document before uploading a new one."
+                ),
+            )
+
+        doc_id = doc_record["document_id"]
+        tmp_path = res.upload_manager.tmp_path_for(doc_id)
+
+        # 6. Stream file content to temp path with strict byte limit & signature check
+        try:
+            head = b""
+            total_bytes = 0
+            chunk_size = 64 * 1024
+            with tmp_path.open("wb") as f_out:
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_UPLOAD_BYTES:
+                        raise PdfValidationError(
+                            "file_too_large",
+                            f"The uploaded file exceeds the maximum allowed size of {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB.",
+                        )
+                    if len(head) < 1024:
+                        head += chunk[: 1024 - len(head)]
+                    f_out.write(chunk)
+
+            if total_bytes == 0:
+                raise PdfValidationError("empty_file", "The uploaded file is empty (0 bytes).")
+            check_pdf_signature(head)
+        except PdfValidationError as val_exc:
+            tmp_path.unlink(missing_ok=True)
+            res.upload_manager.store.finish(doc_id, "failed", val_exc.code, val_exc.message)
+            res.upload_manager._release_slot()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=val_exc.message,
+            ) from val_exc
+        except Exception as exc:
+            tmp_path.unlink(missing_ok=True)
+            res.upload_manager.store.finish(doc_id, "failed", "read_error", "Failed to read upload payload.")
+            res.upload_manager._release_slot()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="An error occurred while saving the uploaded file.",
+            ) from exc
+        finally:
+            await file.close()
+
+        # 7. Submit background processing
+        model = res.retriever.model
+        res.upload_manager.submit(doc_record, model, llm_client)
+
+        return DocumentStatusSchema(**doc_record)
+
+    @app.get(
+        "/api/conversations/{conversation_id}/document",
+        response_model=DocumentStatusSchema,
+    )
+    async def get_conversation_document(
+        request: Request,
+        conversation_id: str = PathParam(..., min_length=1, max_length=64),
+    ) -> DocumentStatusSchema:
+        res = _get_resources(request)
+        cid = conversation_id.strip()
+
+        conv = await anyio.to_thread.run_sync(lambda: res.store.get_conversation(cid))
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Conversation '{cid}' was not found.",
+            )
+
+        doc = await anyio.to_thread.run_sync(
+            lambda: res.upload_manager.store.get_for_conversation(cid)
+        )
+        if doc is None:
+            return DocumentStatusSchema(
+                conversation_id=cid,
+                status="none",
+            )
+        return DocumentStatusSchema(**doc)
+
+    @app.delete(
+        "/api/conversations/{conversation_id}/document",
+        response_model=DeleteDocumentResponse,
+    )
+    async def delete_conversation_document(
+        request: Request,
+        conversation_id: str = PathParam(..., min_length=1, max_length=64),
+    ) -> DeleteDocumentResponse:
+        res = _get_resources(request)
+        cid = conversation_id.strip()
+
+        conv = await anyio.to_thread.run_sync(lambda: res.store.get_conversation(cid))
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Conversation '{cid}' was not found.",
+            )
+
+        deleted = await anyio.to_thread.run_sync(lambda: res.upload_manager.remove(cid))
+        return DeleteDocumentResponse(
+            deleted=deleted is not None,
+            conversation_id=cid,
+            document_id=deleted["document_id"] if deleted else None,
+        )
+
+    @app.post(
         "/api/conversations/{conversation_id}/messages",
         response_model=SendMessageResponse,
     )
@@ -508,7 +792,35 @@ def create_app(
                     detail=f"Gemini configuration error: {_redact_secrets(str(exc))}",
                 ) from exc
 
-        # 3. Serialize turns within the same conversation; reject overlapping sends with 409 Conflict
+        # 3. Determine active retriever based on source_mode
+        source_mode = payload.source_mode
+        if source_mode == "uploaded_pdf":
+            ready_doc = await anyio.to_thread.run_sync(
+                lambda: res.upload_manager.store.get_ready(cid)
+            )
+            if ready_doc is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "No uploaded PDF is ready for this conversation. "
+                        "Please upload a faculty-related PDF or switch to Handbook mode."
+                    ),
+                )
+            active_retriever = await anyio.to_thread.run_sync(
+                lambda: res.upload_manager.get_retriever(cid, res.retriever.model)
+            )
+            if active_retriever is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "The uploaded PDF index could not be loaded. "
+                        "Please remove the document and upload it again."
+                    ),
+                )
+        else:
+            active_retriever = res.retriever
+
+        # 4. Serialize turns within the same conversation; reject overlapping sends with 409 Conflict
         conv_lock = res.get_conversation_lock(cid)
         if conv_lock.locked():
             raise HTTPException(
@@ -522,9 +834,10 @@ def create_app(
         async with conv_lock:
             def _execute_turn() -> tuple[Any, dict[str, Any] | None]:
                 engine = ConversationalRAGEngine(
-                    retriever=res.retriever,  # type: ignore[arg-type]
+                    retriever=active_retriever,  # type: ignore[arg-type]
                     llm_client=llm_client,
                     store=res.store,
+                    source_mode=source_mode,
                 )
                 turn_result = engine.ask(
                     conversation_id=cid,

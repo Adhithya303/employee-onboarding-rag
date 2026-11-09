@@ -121,8 +121,8 @@
     "chunks_json_sha256": "126e5908af3b2deb7f743102956129d1f25a7a50cb67dbde871dd46c6069580e"
   },
   "artifacts_fingerprint": {
-    "faiss_index_sha256": "d33015a655728690712f74c1f68b88f84c640aeafce54cfb5a1bd7bc8b8b9907",
+    "faiss_index_sha256": "491c563b2b0354b49f326987f7228bd13fb1a77f7b863de939a18847287b657a",
     "chunks_metadata_sha256": "126e5908af3b2deb7f743102956129d1f25a7a50cb67dbde871dd46c6069580e"
   },
-  "build_timestamp": "2026-11-07T16:10:59.996402+00:00"
+  "build_timestamp": "2026-11-09T06:30:40.688143+00:00"
 }

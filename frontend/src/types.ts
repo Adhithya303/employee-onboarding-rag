@@ -1,4 +1,32 @@
 export type AnswerStatus = "supported" | "partial" | "unsupported" | "clarify";
+export type SourceMode = "handbook" | "uploaded_pdf";
+
+export type DocumentStatus =
+  | "none"
+  | "processing"
+  | "ready"
+  | "rejected"
+  | "needs_clarification"
+  | "failed";
+
+export interface DocumentStatusResponse {
+  document_id?: string | null;
+  conversation_id: string;
+  display_filename?: string | null;
+  status: DocumentStatus;
+  code?: string | null;
+  message?: string | null;
+  page_count?: number | null;
+  chunk_count?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface DeleteDocumentResponse {
+  deleted: boolean;
+  conversation_id: string;
+  document_id?: string | null;
+}
 
 export interface CitedSource {
   label: string;

@@ -1,0 +1,40 @@
+# Render Blueprint for the Faculty Onboarding Assistant backend (FastAPI, CPU-only RAG).
+# Service root = repository root (the app needs both backend/ and data/).
+# Secrets are NOT stored here: sync:false variables are entered in the Render dashboard.
+services:
+  - type: web
+    name: faculty-onboarding-api
+    runtime: python
+    plan: standard           # 2 GB RAM + disk support. Measured ~515 MB for model+index alone, so 512 MB plans are too small.
+    region: oregon
+    rootDir: .
+    buildCommand: bash scripts/render_build.sh
+    startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port "$PORT"
+    healthCheckPath: /api/ready
+    autoDeploy: false
+    disk:
+      name: chat-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: HF_HOME
+        value: /opt/render/project/src/.cache/huggingface
+      - key: TOKENIZERS_PARALLELISM
+        value: "false"
+      - key: CONVERSATION_DB_PATH
+        value: /var/data/chat_history.db
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_TIMEOUT_SECONDS
+        value: "30"
+      - key: GEMINI_MAX_RETRIES
+        value: "2"
+      - key: CORS_ORIGINS
+        value: https://localhost,capacitor://localhost,http://localhost,http://localhost:5173,http://127.0.0.1:5173
+      - key: ACCESS_TOKEN
+        sync: false
+

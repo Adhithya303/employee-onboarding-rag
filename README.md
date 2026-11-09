@@ -27,13 +27,24 @@ Although the source PDF file is stored at `data/raw/tulane_staff_handbook.pdf`, 
 4. **Stage 4 — Local Web Application (`backend/main.py` + `frontend/`):**
    - **FastAPI Backend (`backend/main.py`):**
      - `GET /api/health`
+     - `GET /api/ready`
      - `POST /api/conversations`
      - `GET /api/conversations`
-     - `GET /api/conversations/{id}/messages`
-     - `POST /api/conversations/{id}/messages`
+     - `GET /api/conversations/{id}/messages` (accepts `source_mode: "handbook" | "uploaded_pdf"`)
+     - `POST /api/conversations/{id}/upload` (chat-scoped multipart PDF upload with faculty relevance validation)
+     - `GET /api/conversations/{id}/document` (retrieves status of uploaded PDF for this chat)
+     - `DELETE /api/conversations/{id}/document` (removes uploaded PDF and its vector index)
      - Loads the CPU embedding model and saved FAISS index once during FastAPI `lifespan`, runs synchronous retrieval/LLM/SQLite work in worker threads (`anyio.to_thread.run_sync`) so the async event loop is never blocked, and serializes turns per conversation (`409 Conflict` on overlapping duplicate sends to the same conversation while allowing concurrent turns across different conversations).
    - **React + TypeScript + Vite Frontend (`frontend/`):**
      - Sidebar with `+ New Chat` and saved conversations, welcome screen with starter handbook questions, safe text rendering, `Enter` to send / `Shift+Enter` for newline, draft preservation on error, expandable citation cards (PDF pages, section, chunk ID, excerpt), `localStorage` active conversation restoration, and race-condition guards when switching chats mid-request.
+     - **Chat-Scoped PDF Upload & Mode Selector:** Upload control for 1 searchable faculty PDF per chat (max 10 MiB, 50 pages), live processing/relevance feedback, removal confirmation, and a toggle between `Tulane Faculty Handbook` and `Uploaded PDF only` search modes.
+
+5. **Stage 5 — Chat-Scoped Custom PDF Upload & Grounded QA (`backend/upload_processing.py`, `backend/upload_relevance.py`, `backend/upload_manager.py`):**
+   - **File Validation:** Enforces strict 10 MiB streaming byte limit, `%PDF-` signature check, pypdf extraction, page count limit (50 pages), text length limits, and scanned/image-only rejection (no OCR).
+   - **Faculty Relevance Gate:** Sends bounded text sample (beginning, middle, end, headings) to Gemini for structured `accept`, `reject`, or `needs_clarification` classification. Ignores untrusted instructions embedded in the PDF.
+   - **Chunking & Indexing:** Chunks with `all-MiniLM-L6-v2` tokenizer without Tulane-specific exclusions, computes normalized float32 CPU embeddings, and publishes a chat-scoped FAISS `IndexFlatIP` index under `data/uploads/<document_id>/`.
+   - **Strict Chat Isolation:** In `uploaded_pdf` mode, queries retrieve exclusively from the current chat's verified upload. If the answer is absent, returns `"I couldn't find that in the uploaded PDF."` Other chats cannot access or retrieve from that document.
+   - **Document Removal:** Deleting the document purges disk artifacts and halts future retrieval while preserving existing transcript messages and citation cards.
 
 ---
 

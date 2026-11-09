@@ -1,0 +1,5 @@
+# Index fingerprints (manifest.json) are SHA-256 hashes of the exact bytes of these files.
+# Never let git rewrite their line endings, or a Linux checkout fails the stale-index check.
+data/** -text
+*.sh text eol=lf
+
