@@ -1,0 +1,30 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Frontend build & dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Python cache and pytest artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Generated processed data, vector index, and conversation SQLite DB
+data/processed/
+data/index/
+data/conversations/
+*.db
+*.sqlite
+*.sqlite3
