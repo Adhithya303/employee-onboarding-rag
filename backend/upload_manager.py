@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import shutil
 import sqlite3
 import threading
@@ -69,7 +70,10 @@ def _now() -> str:
 class UploadStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            pass
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -197,6 +201,48 @@ class UploadStore:
             ).fetchall()}
 
 
+def resolve_uploads_dir(
+    target_dir: Path | str | None = None,
+    preferred_parent: Path | None = None,
+) -> Path:
+    """
+    Resolve a writable directory for uploaded document artifacts.
+    Safely falls back if the target directory cannot be created or written to.
+    """
+    candidates: list[Path] = []
+    if target_dir:
+        candidates.append(Path(target_dir))
+    if preferred_parent:
+        candidates.append(preferred_parent / "uploads")
+    if os.environ.get("UPLOAD_ARTIFACTS_DIR"):
+        candidates.append(Path(os.environ["UPLOAD_ARTIFACTS_DIR"]))
+    if os.environ.get("CONVERSATION_DB_PATH"):
+        candidates.append(Path(os.environ["CONVERSATION_DB_PATH"]).parent / "uploads")
+
+    project_root = Path(__file__).resolve().parent.parent
+    candidates.append(project_root / "data" / "uploads")
+    candidates.append(Path("/tmp") / "data" / "uploads")
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            test_file = candidate / f".write_test_{os.getpid()}"
+            test_file.touch(exist_ok=True)
+            test_file.unlink(missing_ok=True)
+            return candidate
+        except (PermissionError, OSError) as exc:
+            log.warning(
+                "Uploads directory '%s' is not writable (%s). Trying fallback candidate...",
+                candidate,
+                exc,
+            )
+            continue
+
+    fallback = Path("/tmp") / "uploads"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
 class UploadManager:
     def __init__(
         self,
@@ -208,7 +254,7 @@ class UploadManager:
         cache_size: int = 8,
     ) -> None:
         self.store = store
-        self.root = Path(root)
+        self.root = resolve_uploads_dir(root, preferred_parent=store.db_path.parent)
         self.limits = limits or UploadLimits()
         self.tmp_dir = self.root / "tmp"
         self.root.mkdir(parents=True, exist_ok=True)

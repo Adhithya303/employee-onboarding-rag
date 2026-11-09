@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOCAL_DB_PATH = PROJECT_ROOT / "data" / "conversations" / "chat_history.db"
@@ -24,6 +27,39 @@ DEFAULT_DB_PATH = (
 )
 
 
+def resolve_db_path(target_path: Path | str | None = None) -> Path:
+    """
+    Resolve a writable database file path.
+    Prioritizes the explicitly provided or configured path (e.g. /var/data/chat_history.db from Render disk),
+    but safely falls back to project local storage or /tmp if the directory cannot be created or written to.
+    """
+    candidates: list[Path] = []
+    if target_path:
+        candidates.append(Path(target_path))
+    elif os.environ.get("CONVERSATION_DB_PATH"):
+        candidates.append(Path(os.environ["CONVERSATION_DB_PATH"]))
+
+    candidates.append(_LOCAL_DB_PATH)
+    candidates.append(Path("/tmp") / "data" / "conversations" / "chat_history.db")
+
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            test_file = candidate.parent / f".write_test_{os.getpid()}"
+            test_file.touch(exist_ok=True)
+            test_file.unlink(missing_ok=True)
+            return candidate
+        except (PermissionError, OSError) as exc:
+            log.warning(
+                "Database directory '%s' is not writable (%s). Trying fallback candidate...",
+                candidate.parent,
+                exc,
+            )
+            continue
+
+    return Path("/tmp") / "chat_history.db"
+
+
 def _utc_now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -32,7 +68,7 @@ class ConversationStore:
     """SQLite-backed store for conversations and turns."""
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
-        self.db_path = Path(db_path)
+        self.db_path = resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 

@@ -99,3 +99,14 @@ def test_db_path_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         importlib.reload(cs)
     assert cs.DEFAULT_DB_PATH.name == "chat_history.db"
 
+
+def test_unwritable_db_path_falls_back_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.conversation_store import ConversationStore
+
+    # Simulates Render deployment where /var/data was configured in env but disk was not attached
+    monkeypatch.setenv("CONVERSATION_DB_PATH", "Z:/nonexistent_drive_root/var/data/chat_history.db")
+    store = ConversationStore()
+    assert store.db_path.exists() or store.db_path.parent.exists()
+    assert "Z:" not in str(store.db_path)
+
+
