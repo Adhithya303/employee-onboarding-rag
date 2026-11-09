@@ -22,9 +22,6 @@ __pycache__/
 .pytest_cache/
 
 # Generated processed data, vector index, and conversation SQLite DB
-data/processed/
-data/index/
-data/conversations/
 *.db
 *.sqlite
 *.sqlite3

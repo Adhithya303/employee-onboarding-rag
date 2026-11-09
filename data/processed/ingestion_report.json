@@ -1,0 +1,133 @@
+{
+  "project": "Tulane University Faculty Onboarding Assistant",
+  "source_file": "data/raw/tulane_staff_handbook.pdf",
+  "document_title": "Tulane University Faculty Handbook",
+  "dataset_note": "The source PDF is the Tulane University Faculty Handbook (pages 1-191) with the appended Research Misconduct Policy (pages 192-238). Faculty policies must never be presented as general staff policies.",
+  "total_pdf_pages": 238,
+  "indexed_pages_count": 226,
+  "indexed_pages_by_section": {
+    "Faculty Handbook (Main)": 180,
+    "Appended Research Misconduct Policy": 46
+  },
+  "skipped_pages_count": 12,
+  "skipped_pages": [
+    {
+      "page": 2,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 2"
+      ]
+    },
+    {
+      "page": 3,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 3"
+      ]
+    },
+    {
+      "page": 49,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 49"
+      ]
+    },
+    {
+      "page": 50,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 50"
+      ]
+    },
+    {
+      "page": 140,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 140"
+      ]
+    },
+    {
+      "page": 141,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 141"
+      ]
+    },
+    {
+      "page": 142,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 142"
+      ]
+    },
+    {
+      "page": 143,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 143"
+      ]
+    },
+    {
+      "page": 144,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 144"
+      ]
+    },
+    {
+      "page": 145,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 145"
+      ]
+    },
+    {
+      "page": 146,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 146"
+      ]
+    },
+    {
+      "page": 193,
+      "document_section": "Appended Research Misconduct Policy",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "RMP Page 2 of 47"
+      ]
+    }
+  ],
+  "partial_toc_lines_removed_on_pages": [
+    192,
+    194
+  ],
+  "verified_appendix_boundary_page": 192,
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "model_max_seq_length": 256,
+  "embedding_dimension": 384,
+  "chunking_settings": {
+    "target_content_tokens": 180,
+    "max_content_tokens": 195,
+    "overlap_tokens": 30
+  },
+  "chunks_summary": {
+    "total_chunks": 749,
+    "main_handbook_chunks": 634,
+    "research_misconduct_policy_chunks": 115,
+    "min_content_tokens": 8,
+    "avg_content_tokens": 149.2,
+    "max_content_tokens": 195,
+    "max_embedding_input_tokens_with_special": 242
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "project": "Tulane University Faculty Onboarding Assistant",
+  "document_title": "Tulane University Faculty Handbook",
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "device": "cpu",
+  "index_type": "IndexFlatIP",
+  "similarity_metric": "cosine_similarity_via_normalized_inner_product",
+  "embedding_dimension": 384,
+  "model_max_seq_length": 256,
+  "longest_content_tokens": 195,
+  "longest_embedding_input_tokens": 242,
+  "num_chunks": 749,
+  "indexed_pages_count": 226,
+  "skipped_pages_count": 12,
+  "skipped_pages": [
+    {
+      "page": 2,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 2"
+      ]
+    },
+    {
+      "page": 3,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 3"
+      ]
+    },
+    {
+      "page": 49,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 49"
+      ]
+    },
+    {
+      "page": 50,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 50"
+      ]
+    },
+    {
+      "page": 140,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 140"
+      ]
+    },
+    {
+      "page": 141,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 141"
+      ]
+    },
+    {
+      "page": 142,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 142"
+      ]
+    },
+    {
+      "page": 143,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 143"
+      ]
+    },
+    {
+      "page": 144,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 144"
+      ]
+    },
+    {
+      "page": 145,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 145"
+      ]
+    },
+    {
+      "page": 146,
+      "document_section": "Faculty Handbook (Main)",
+      "reason": "blank_or_header_footer_only",
+      "removed_headers_footers": [
+        "Tulane University Faculty Handbook | Page 146"
+      ]
+    },
+    {
+      "page": 193,
+      "document_section": "Appended Research Misconduct Policy",
+      "reason": "table_of_contents",
+      "removed_headers_footers": [
+        "RMP Page 2 of 47"
+      ]
+    }
+  ],
+  "chunking_settings": {
+    "target_content_tokens": 180,
+    "max_content_tokens": 195,
+    "overlap_tokens": 30,
+    "verified_appendix_boundary_page": 192
+  },
+  "input_fingerprint": {
+    "pages_json_sha256": "bf4c42a17f880581b77f5e2e020fb48a6c9857d6d9f4eb3054827e29abf181da",
+    "chunks_json_sha256": "126e5908af3b2deb7f743102956129d1f25a7a50cb67dbde871dd46c6069580e"
+  },
+  "artifacts_fingerprint": {
+    "faiss_index_sha256": "d33015a655728690712f74c1f68b88f84c640aeafce54cfb5a1bd7bc8b8b9907",
+    "chunks_metadata_sha256": "126e5908af3b2deb7f743102956129d1f25a7a50cb67dbde871dd46c6069580e"
+  },
+  "build_timestamp": "2026-11-07T16:10:59.996402+00:00"
+}
